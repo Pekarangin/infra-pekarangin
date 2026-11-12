@@ -1,0 +1,114 @@
+# ============================================================
+# Docker Compose — Pekarang.in Full-Stack Infrastructure
+# Services:
+#   1. postgres   (PostgreSQL 16 Alpine)
+#   2. ai-service (FastAPI + Gemini AI & Scoring Engine)
+#   3. backend    (Node.js 20 + Express + Prisma ORM)
+# ============================================================
+# Cara pakai (dari folder infra-pekarangin/):
+#   docker compose up --build          (foreground)
+#   docker compose up --build -d       (background)
+#   docker compose down                (stop)
+#   docker compose down -v             (stop + hapus volume DB)
+#   docker compose logs -f backend     (lihat log backend)
+# ============================================================
+
+services:
+  # ---- 1. PostgreSQL Database ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: pekarangin-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pekarangin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pekarangin_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-pekarangin_dev}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pekarangin} -d ${POSTGRES_DB:-pekarangin_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pekarangin-network
+
+  # ---- 2. AI & Data Microservice (FastAPI) ----
+  ai-service:
+    build:
+      context: ../ai-pekarangin
+      dockerfile: Dockerfile
+    container_name: pekarangin-ai
+    restart: unless-stopped
+    environment:
+      PORT: 8000
+      HOST: 0.0.0.0
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      BACKEND_URL: http://backend:3000
+    ports:
+      - "${AI_PORT:-8000}:8000"
+    volumes:
+      - ../ai-pekarangin/app:/app/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - pekarangin-network
+
+  # ---- 3. Backend API Server (Express + Prisma) ----
+  backend:
+    build:
+      context: ../be-pekarangin
+      dockerfile: Dockerfile
+      target: development
+    container_name: pekarangin-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pekarangin}:${POSTGRES_PASSWORD:-pekarangin_secret}@postgres:5432/${POSTGRES_DB:-pekarangin_dev}
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_ganti_ini_di_production_minimal_32_char}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    volumes:
+      # Bind mount untuk hot-reload (development)
+      - ../be-pekarangin/src:/app/src
+      - ../be-pekarangin/prisma:/app/prisma
+      - ../be-pekarangin/database:/app/database
+      # Jangan mount node_modules dari host (pakai yang di container)
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    command: sh -c "npx prisma db push && node prisma/seed.js && npm run dev"
+    networks:
+      - pekarangin-network
+
+volumes:
+  pgdata:
+    name: pekarangin-pgdata
+
+networks:
+  pekarangin-network:
+    name: pekarangin-network
+    driver: bridge

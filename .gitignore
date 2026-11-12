@@ -1,0 +1,18 @@
+# Environment Variables (JANGAN commit file .env asli)
+.env
+.env.local
+.env.*.local
+
+# Dokumen internal / laporan lokal
+*.docx
+*.pdf
+
+# Docker & Database Volumes
+pgdata/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
